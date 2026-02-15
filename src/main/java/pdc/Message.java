@@ -2,6 +2,8 @@ package pdc;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
+
 
 public class Message {
 
@@ -24,63 +26,148 @@ public class Message {
     public Message() {}
 
     public byte[] pack() {
-        try {
-            // Ensure aliases are consistent
-            String useType = (messageType != null) ? messageType : type;
-            String useSender = (studentId != null) ? studentId : sender;
 
-            if (magic == null) magic = MAGIC_CONST;
-            if (version == 0) version = VERSION_CONST;
-            if (useType == null) useType = "";
-            if (useSender == null) useSender = "";
+        String useType = (messageType != null) ? messageType : type;
+        String useSender = (studentId != null) ? studentId : sender;
 
-            ByteArrayOutputStream bodyStream = new ByteArrayOutputStream();
-            DataOutputStream out = new DataOutputStream(bodyStream);
+        if (magic == null) magic = MAGIC_CONST;
+        if (version == 0) version = VERSION_CONST;
+        if (useType == null) useType = "";
+        if (useSender == null) useSender = "";
+        if (payload == null) payload = new byte[0];
+        if (timestamp == 0) timestamp = System.currentTimeMillis();
 
-            // ---- MAGIC ----
-            byte[] magicBytes = magic.getBytes(StandardCharsets.UTF_8);
-            out.writeInt(magicBytes.length);
-            out.write(magicBytes);
+        byte[] magicBytes = magic.getBytes(StandardCharsets.UTF_8);
+        byte[] typeBytes = useType.getBytes(StandardCharsets.UTF_8);
+        byte[] senderBytes = useSender.getBytes(StandardCharsets.UTF_8);
 
-            // ---- VERSION ----
-            out.writeInt(version);
+        int bodySize =
+                4 + magicBytes.length +
+                        4 +
+                        4 + typeBytes.length +
+                        4 + senderBytes.length +
+                        8 +
+                        4 + payload.length;
 
-            // ---- TYPE ----
-            byte[] typeBytes = useType.getBytes(StandardCharsets.UTF_8);
-            out.writeInt(typeBytes.length);
-            out.write(typeBytes);
+        ByteBuffer buffer = ByteBuffer.allocate(4 + bodySize);
 
-            // ---- SENDER ----
-            byte[] senderBytes = useSender.getBytes(StandardCharsets.UTF_8);
-            out.writeInt(senderBytes.length);
-            out.write(senderBytes);
+        buffer.putInt(bodySize);
 
-            // ---- TIMESTAMP ----
-            out.writeLong(timestamp);
+        buffer.putInt(magicBytes.length);
+        buffer.put(magicBytes);
 
-            // ---- PAYLOAD ----
-            if (payload != null) {
-                out.writeInt(payload.length);
-                out.write(payload);
-            } else {
-                out.writeInt(0);
-            }
+        buffer.putInt(version);
 
-            out.flush();
-            byte[] body = bodyStream.toByteArray();
+        buffer.putInt(typeBytes.length);
+        buffer.put(typeBytes);
 
-            // ---- FRAME PREFIX ----
-            ByteArrayOutputStream frameStream = new ByteArrayOutputStream();
-            DataOutputStream frameOut = new DataOutputStream(frameStream);
-            frameOut.writeInt(body.length);
-            frameOut.write(body);
-            frameOut.flush();
+        buffer.putInt(senderBytes.length);
+        buffer.put(senderBytes);
 
-            return frameStream.toByteArray();
+        buffer.putLong(timestamp);
 
-        } catch (IOException e) {
-            throw new RuntimeException("Error packing message", e);
+        buffer.putInt(payload.length);
+        buffer.put(payload);
+
+        return buffer.array();
+    }
+
+// Add inside Message.java
+
+    public void packTo(OutputStream os) throws IOException {
+        DataOutputStream out = (os instanceof DataOutputStream) ? (DataOutputStream) os : new DataOutputStream(os);
+
+        // Ensure aliases consistent
+        String useType = (messageType != null) ? messageType : type;
+        String useSender = (studentId != null) ? studentId : sender;
+
+        if (magic == null) magic = MAGIC_CONST;
+        if (version == 0) version = VERSION_CONST;
+        if (useType == null) useType = "";
+        if (useSender == null) useSender = "";
+
+        byte[] magicBytes = magic.getBytes(StandardCharsets.UTF_8);
+        byte[] typeBytes = useType.getBytes(StandardCharsets.UTF_8);
+        byte[] senderBytes = useSender.getBytes(StandardCharsets.UTF_8);
+        int payloadLen = (payload == null) ? 0 : payload.length;
+
+        // compute body length (everything after frame length)
+        int bodyLen =
+                4 + magicBytes.length +        // magic len + magic
+                        4 +                            // version
+                        4 + typeBytes.length +         // type len + type
+                        4 + senderBytes.length +       // sender len + sender
+                        8 +                            // timestamp
+                        4 + payloadLen;                // payload len + payload
+
+        // frame length prefix
+        out.writeInt(bodyLen);
+
+        // body
+        out.writeInt(magicBytes.length);
+        out.write(magicBytes);
+
+        out.writeInt(version);
+
+        out.writeInt(typeBytes.length);
+        out.write(typeBytes);
+
+        out.writeInt(senderBytes.length);
+        out.write(senderBytes);
+
+        out.writeLong(timestamp);
+
+        out.writeInt(payloadLen);
+        if (payloadLen > 0) out.write(payload);
+
+        out.flush();
+    }
+
+    public static Message unpackFrom(DataInputStream in, int frameLen) throws IOException {
+        // frameLen is the BODY length (not including the 4 bytes of frameLen itself)
+        // Read body fields directly from stream (no intermediate byte[])
+        Message msg = new Message();
+
+        int magicLen = in.readInt();
+        if (magicLen < 0 || magicLen > 1000) throw new IOException("Invalid magic length: " + magicLen);
+        byte[] magicBytes = new byte[magicLen];
+        in.readFully(magicBytes);
+        msg.magic = new String(magicBytes, StandardCharsets.UTF_8);
+
+        msg.version = in.readInt();
+
+        int typeLen = in.readInt();
+        if (typeLen < 0 || typeLen > 10_000) throw new IOException("Invalid type length: " + typeLen);
+        byte[] typeBytes = new byte[typeLen];
+        in.readFully(typeBytes);
+        msg.type = new String(typeBytes, StandardCharsets.UTF_8);
+
+        int senderLen = in.readInt();
+        if (senderLen < 0 || senderLen > 10_000) throw new IOException("Invalid sender length: " + senderLen);
+        byte[] senderBytes = new byte[senderLen];
+        in.readFully(senderBytes);
+        msg.sender = new String(senderBytes, StandardCharsets.UTF_8);
+
+        msg.timestamp = in.readLong();
+
+        int payloadLen = in.readInt();
+        if (payloadLen < 0 || payloadLen > 200_000_000) throw new IOException("Invalid payload length: " + payloadLen);
+        if (payloadLen > 0) {
+            msg.payload = new byte[payloadLen];
+            in.readFully(msg.payload);
+        } else {
+            msg.payload = new byte[0];
         }
+
+        // aliases
+        msg.messageType = msg.type;
+        msg.studentId = msg.sender;
+
+        // validation
+        if (!MAGIC_CONST.equals(msg.magic)) throw new IOException("Bad magic: " + msg.magic);
+        if (msg.version != VERSION_CONST) throw new IOException("Bad version: " + msg.version);
+
+        return msg;
     }
 
     public static Message unpack(byte[] data) {

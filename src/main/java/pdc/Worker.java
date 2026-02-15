@@ -190,29 +190,26 @@ public class Worker {
     // IO Helpers
     // ======================================================
     private Message readOneMessage() throws IOException {
-
         int frameLen;
-
         try {
             frameLen = in.readInt();
         } catch (EOFException e) {
             return null;
         }
-
-        byte[] frame = new byte[frameLen];
-        in.readFully(frame);
-        return Message.unpack(frame);
+        if (frameLen <= 0 || frameLen > 100_000_000) {
+            throw new IOException("Invalid frame length: " + frameLen);
+        }
+        return Message.unpackFrom(in, frameLen);
     }
 
+
     private void send(Message msg) throws IOException {
-
-        byte[] bytes = msg.pack();
-
         synchronized (sendLock) {
-            out.write(bytes);
+            msg.packTo(out);
             out.flush();
         }
     }
+
 
     private void sendError(String message) throws IOException {
 
