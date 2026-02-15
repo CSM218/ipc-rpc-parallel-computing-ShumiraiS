@@ -291,8 +291,15 @@ public class Master {
             m.payload = buildTaskPayload(task);
 
             wc.inFlightTasks.add(task.taskId);
-            inFlight.putIfAbsent(task.taskId,
-                    new InFlight(task, wc.workerId, System.currentTimeMillis()));
+
+            inFlight.compute(task.taskId, (id, existing) -> {
+                if (existing == null) {
+                    return new InFlight(task, wc.workerId, System.currentTimeMillis());
+                } else {
+                    // 🔥 Critical: update worker + reset timer on reassignment
+                    return new InFlight(task, wc.workerId, System.currentTimeMillis());
+                }
+            });
 
             // ✅ RPC abstraction wrapper (autograder check)
             sendRpc(wc, m);
@@ -327,19 +334,30 @@ public class Master {
         WorkerConn wc = workers.get(workerId);
         if (wc == null) return;
 
+        if (!wc.alive) return;
+
         wc.alive = false;
 
-        // ✅ recovery mechanism: requeue unfinished in-flight tasks
-        for (Integer taskId : new ArrayList<>(wc.inFlightTasks)) {
+        List<Integer> snapshot = new ArrayList<>(wc.inFlightTasks);
+
+        for (Integer taskId : snapshot) {
+
             InFlight infl = inFlight.get(taskId);
             if (infl != null && !infl.completed.get()) {
+
+                // Requeue the task
                 pending.offer(infl.task);
+
+                // ✅ ALWAYS remove old inflight record
+                inFlight.remove(taskId);
             }
         }
+
         wc.inFlightTasks.clear();
 
         try { wc.socket.close(); } catch (IOException ignored) {}
     }
+
 
     private void waitForWorkers(int desired, long timeout) {
         long deadline = System.currentTimeMillis() + timeout;
